@@ -1,0 +1,72 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Download whisper-tiny model
+        run: |
+          mkdir -p public/models/whisper-tiny/onnx
+          cd public/models/whisper-tiny
+          # Download model config files from HuggingFace
+          BASE_URL="https://huggingface.co/Xenova/whisper-tiny/resolve/main"
+          for file in config.json generation_config.json preprocessor_config.json tokenizer.json tokenizer_config.json vocab.json merges.txt special_tokens_map.json added_tokens.json normalizer.json quantize_config.json; do
+            curl -sL "$BASE_URL/$file" -o "$file" || echo "Warning: $file not found"
+          done
+          # Download ONNX model files
+          cd onnx
+          curl -sL "$BASE_URL/onnx/encoder_model_quantized.onnx" -o "encoder_model_quantized.onnx"
+          curl -sL "$BASE_URL/onnx/decoder_model_merged_quantized.onnx" -o "decoder_model_merged_quantized.onnx"
+
+      - name: Build
+        run: pnpm build
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

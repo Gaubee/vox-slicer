@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>英语教学音频切片工具 (Pro+版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    
+    <style>
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .link-btn { transition: all 0.2s; cursor: pointer; z-index: 20; }
+        .link-btn:hover { transform: scale(1.1); }
+        .group-transition { transition: background-color 0.3s ease; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-4 md:p-8 text-gray-800 font-sans">
+
+    <div id="app" class="max-w-5xl mx-auto">
+        <!-- 头部 -->
+        <header class="bg-white shadow-sm rounded-xl p-6 mb-6 flex justify-between items-center">
+            <div>
+                <h1 class="text-2xl font-bold text-indigo-600 flex items-center">
+                    <span class="material-icons mr-2">graphic_eq</span> 智能音频切片工具
+                </h1>
+                <p class="text-gray-500 text-sm mt-1">上传音频 -> AI 识别 -> 智能组合 -> 导出教材</p>
+            </div>
+            <div v-if="segments.length > 0" class="flex space-x-3">
+                <button @click="openAutoGroupModal" class="bg-emerald-50 text-emerald-600 hover:bg-emerald-100 px-4 py-2 rounded-lg flex items-center transition font-medium">
+                    <span class="material-icons mr-2 text-lg">auto_fix_high</span> 智能分片
+                </button>
+                <button @click="generateAndDownload" :disabled="isExporting" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg flex items-center shadow disabled:opacity-50 transition font-medium">
+                    <span class="material-icons mr-2 text-lg">download</span> 
+                    {{ isExporting ? '处理中...' : '导出 ZIP' }}
+                </button>
+            </div>
+        </header>
+
+        <!-- 1. 上传区域 -->
+        <div v-if="!audioBuffer" class="bg-white border-2 border-dashed border-gray-300 rounded-xl p-16 text-center hover:border-indigo-400 hover:bg-indigo-50 transition duration-300 group cursor-pointer relative">
+            <input type="file" @change="handleFileUpload" accept="audio/*" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" id="audioInput">
+            <span class="material-icons text-6xl text-gray-300 group-hover:text-indigo-400 mb-4 transition">cloud_upload</span>
+            <div class="text-xl font-medium text-gray-600 group-hover:text-indigo-600">点击上传 MP3/WAV 文件</div>
+            <div class="text-sm text-gray-400 mt-2">浏览器本地 AI 分析，保护隐私</div>
+        </div>
+
+        <!-- 状态提示 -->
+        <div v-if="status" class="mb-6 p-4 bg-white border-l-4 border-blue-500 shadow-sm rounded-r-lg flex items-center animate-fade-in">
+            <span class="material-icons mr-3 text-blue-500" :class="{'animate-spin': isLoading}">{{ isLoading ? 'sync' : 'info' }}</span>
+            <span class="text-gray-700">{{ status }}</span>
+        </div>
+
+        <!-- 2. 编辑列表区域 -->
+        <div v-if="segments.length > 0" class="bg-white shadow-lg rounded-xl overflow-hidden">
+            <div class="flex justify-between items-center p-4 bg-gray-50 border-b">
+                <label class="flex items-center space-x-2 cursor-pointer select-none">
+                    <input type="checkbox" v-model="selectAll" @change="toggleSelectAll" class="w-5 h-5 text-indigo-600 rounded focus:ring-indigo-500">
+                    <span class="text-gray-700 font-medium">全选所有片段</span>
+                </label>
+                <span class="text-sm text-gray-400">共 {{ segments.length }} 个原始句，当前合并为 {{ groupCount }} 组</span>
+            </div>
+
+            <div class="overflow-y-auto" style="max-height: 70vh;">
+                <div v-for="(seg, index) in segmentsWithColors" :key="index">
+                    <div :class="['relative flex items-center p-3 transition-colors duration-300 group-transition', seg.bgColorClass, seg.isEndOfGroup ? 'border-b border-gray-100' : '', 'hover:brightness-95']">
+                        <div class="absolute left-0 top-0 bottom-0 w-1" :class="seg.accentColorClass"></div>
+                        <div class="pl-3 pr-4">
+                            <input type="checkbox" v-model="seg.ref.selected" class="w-5 h-5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500">
+                        </div>
+                        <button @click="playSegment(seg.ref)" class="mr-4 text-gray-400 hover:text-indigo-600 transition transform active:scale-95 focus:outline-none">
+                            <span class="material-icons text-3xl">play_circle</span>
+                        </button>
+                        <div class="text-xs font-mono text-gray-400 w-24 flex-shrink-0 leading-tight">
+                            <div>{{ formatTime(seg.ref.start) }}</div>
+                            <div>{{ formatTime(seg.ref.end) }}</div>
+                        </div>
+                        <div class="flex-1 ml-2">
+                            <textarea v-model="seg.ref.text" rows="1" class="w-full p-2 bg-transparent border border-transparent hover:border-gray-300 focus:border-indigo-400 focus:bg-white rounded text-gray-700 focus:ring-2 focus:ring-indigo-100 outline-none resize-none transition text-base"></textarea>
+                        </div>
+                    </div>
+                    <div v-if="index < segments.length - 1" class="h-0 relative z-10 flex justify-center items-center">
+                        <div @click="toggleLink(index)" :class="['link-btn w-7 h-7 rounded-full flex items-center justify-center border shadow-sm select-none absolute -top-3.5', seg.ref.linkNext ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-300 border-gray-200 hover:border-gray-400 hover:text-gray-500']" :title="seg.ref.linkNext ? '点击断开' : '点击合并下一句'">
+                            <span class="material-icons" style="font-size: 16px;">{{ seg.ref.linkNext ? 'link' : 'link_off' }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3. 智能分片弹窗 -->
+        <div v-if="showAutoGroupModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg p-6 transform transition-all scale-100">
+                <h3 class="text-xl font-bold text-gray-800 mb-6 flex items-center border-b pb-4">
+                    <span class="material-icons mr-2 text-emerald-500">auto_fix_high</span> 智能分片设置
+                </h3>
+                
+                <div class="space-y-6">
+                    <!-- 模式选择 (3种) -->
+                    <div class="grid grid-cols-3 gap-3">
+                        <!-- 模式1: 按时间 -->
+                        <label class="cursor-pointer border-2 rounded-lg p-3 flex flex-col items-center hover:bg-gray-50 transition text-center"
+                               :class="autoGroupMode === 'time' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200'">
+                            <input type="radio" v-model="autoGroupMode" value="time" class="hidden">
+                            <span class="material-icons mb-2" :class="autoGroupMode === 'time' ? 'text-emerald-600' : 'text-gray-400'">timer</span>
+                            <span class="font-bold text-sm text-gray-700">按时长</span>
+                            <span class="text-xs text-gray-400 mt-1">例如: 每10秒</span>
+                        </label>
+
+                        <!-- 模式2: 按每组数量 -->
+                        <label class="cursor-pointer border-2 rounded-lg p-3 flex flex-col items-center hover:bg-gray-50 transition text-center"
+                               :class="autoGroupMode === 'count' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200'">
+                            <input type="radio" v-model="autoGroupMode" value="count" class="hidden">
+                            <span class="material-icons mb-2" :class="autoGroupMode === 'count' ? 'text-emerald-600' : 'text-gray-400'">format_list_numbered</span>
+                            <span class="font-bold text-sm text-gray-700">按每组句数</span>
+                            <span class="text-xs text-gray-400 mt-1">例如: 每3句</span>
+                        </label>
+
+                        <!-- 模式3: 按最终数量 -->
+                        <label class="cursor-pointer border-2 rounded-lg p-3 flex flex-col items-center hover:bg-gray-50 transition text-center"
+                               :class="autoGroupMode === 'total' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200'">
+                            <input type="radio" v-model="autoGroupMode" value="total" class="hidden">
+                            <span class="material-icons mb-2" :class="autoGroupMode === 'total' ? 'text-emerald-600' : 'text-gray-400'">pie_chart</span>
+                            <span class="font-bold text-sm text-gray-700">按最终组数</span>
+                            <span class="text-xs text-gray-400 mt-1">例如: 共10组</span>
+                        </label>
+                    </div>
+
+                    <!-- 参数输入 -->
+                    <div class="bg-gray-50 p-5 rounded-lg border border-gray-100">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            {{ inputLabel }}
+                        </label>
+                        <div class="flex items-center">
+                            <input type="number" v-model.number="autoGroupValue" class="flex-1 border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-200 outline-none" min="1" :max="autoGroupMode === 'total' ? segments.length : ''">
+                            <span class="ml-3 text-gray-500 text-sm font-medium">
+                                {{ inputUnit }}
+                            </span>
+                        </div>
+                        <p class="text-xs text-gray-400 mt-2">
+                            {{ inputHint }}
+                        </p>
+                    </div>
+                </div>
+
+                <div class="flex justify-end space-x-3 mt-8">
+                    <button @click="showAutoGroupModal = false" class="px-4 py-2 text-gray-500 hover:text-gray-700">取消</button>
+                    <button @click="applyAutoGroup" class="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-medium shadow-md transition">
+                        开始分片
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <audio ref="audioPlayer" class="hidden"></audio>
+    </div>
+
+    <script type="module">
+        import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.16.0';
+
+        env.allowLocalModels = false;
+        env.useBrowserCache = true;
+
+        const { createApp, ref, computed } = Vue;
+
+        createApp({
+            setup() {
+                const audioBuffer = ref(null);
+                const segments = ref([]);
+                const status = ref('');
+                const isLoading = ref(false);
+                const isExporting = ref(false);
+                const selectAll = ref(true);
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+                // 智能分片
+                const showAutoGroupModal = ref(false);
+                const autoGroupMode = ref('time'); // 'time', 'count', 'total'
+                const autoGroupValue = ref(10);
+
+                const colorPalette = [
+                    { bg: 'bg-white', accent: 'bg-gray-200' },
+                    { bg: 'bg-blue-50', accent: 'bg-blue-300' },
+                    { bg: 'bg-green-50', accent: 'bg-green-300' },
+                    { bg: 'bg-amber-50', accent: 'bg-amber-300' },
+                    { bg: 'bg-purple-50', accent: 'bg-purple-300' },
+                    { bg: 'bg-pink-50', accent: 'bg-pink-300' }
+                ];
+
+                const segmentsWithColors = computed(() => {
+                    let groupIndex = 0;
+                    const result = [];
+                    segments.value.forEach((seg, index) => {
+                        const colorObj = colorPalette[groupIndex % colorPalette.length];
+                        result.push({
+                            ref: seg,
+                            bgColorClass: colorObj.bg,
+                            accentColorClass: colorObj.accent,
+                            isEndOfGroup: !seg.linkNext
+                        });
+                        if (!seg.linkNext) groupIndex++;
+                    });
+                    return result;
+                });
+
+                const groupCount = computed(() => segments.value.filter(s => !s.linkNext).length);
+
+                // 动态计算弹窗提示文字
+                const inputLabel = computed(() => {
+                    if (autoGroupMode.value === 'time') return '目标时长';
+                    if (autoGroupMode.value === 'count') return '每组包含';
+                    if (autoGroupMode.value === 'total') return '期望总组数';
+                    return '';
+                });
+                const inputUnit = computed(() => {
+                    if (autoGroupMode.value === 'time') return '秒 (约)';
+                    if (autoGroupMode.value === 'count') return '句';
+                    if (autoGroupMode.value === 'total') return '组';
+                    return '';
+                });
+                const inputHint = computed(() => {
+                    if (autoGroupMode.value === 'time') return '自动合并句子，直到接近设定的时长。';
+                    if (autoGroupMode.value === 'count') return '固定每组包含多少个原始句子。';
+                    if (autoGroupMode.value === 'total') return `将 ${segments.value.length} 个句子均匀分配到指定数量的组中。`;
+                    return '';
+                });
+
+                const openAutoGroupModal = () => {
+                    // 如果切换到 total 模式，默认值设为当前句子数的一半（体验更好）
+                    if (autoGroupMode.value === 'total' && autoGroupValue.value > segments.value.length) {
+                        autoGroupValue.value = Math.max(1, Math.floor(segments.value.length / 2));
+                    }
+                    showAutoGroupModal.value = true;
+                };
+
+                const formatTime = (seconds) => {
+                    const mins = Math.floor(seconds / 60);
+                    const secs = (seconds % 60).toFixed(2);
+                    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+                };
+
+                const handleFileUpload = async (event) => {
+                    const file = event.target.files[0];
+                    if (!file) return;
+                    status.value = '正在解码音频...';
+                    isLoading.value = true;
+                    try {
+                        const arrayBuffer = await file.arrayBuffer();
+                        audioBuffer.value = await audioContext.decodeAudioData(arrayBuffer);
+                        status.value = '正在加载 AI 模型 (Whisper Tiny)...';
+                        const transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny');
+                        status.value = '正在分析语音内容...';
+                        const url = URL.createObjectURL(file);
+                        const output = await transcriber(url, { chunk_length_s: 30, stride_length_s: 5, return_timestamps: true });
+                        segments.value = output.chunks.map((chunk, idx) => ({
+                            id: idx + 1, start: chunk.timestamp[0], end: chunk.timestamp[1] || audioBuffer.value.duration,
+                            text: chunk.text.trim(), selected: true, linkNext: false 
+                        }));
+                        status.value = '';
+                    } catch (error) {
+                        console.error(error);
+                        status.value = '发生错误，请检查控制台。';
+                    } finally {
+                        isLoading.value = false;
+                    }
+                };
+
+                const playSegment = (seg) => {
+                    if(window.currentSource) try{ window.currentSource.stop(); } catch(e){}
+                    const source = audioContext.createBufferSource();
+                    source.buffer = audioBuffer.value;
+                    source.connect(audioContext.destination);
+                    source.start(0, seg.start, seg.end - seg.start);
+                    window.currentSource = source;
+                };
+
+                const toggleLink = (index) => segments.value[index].linkNext = !segments.value[index].linkNext;
+                const toggleSelectAll = () => segments.value.forEach(s => s.selected = selectAll.value);
+
+                // --- 核心更新：智能分片逻辑 ---
+                const applyAutoGroup = () => {
+                    const rawSegments = segments.value;
+                    const val = Math.max(1, autoGroupValue.value);
+
+                    // 重置
+                    rawSegments.forEach(s => { s.linkNext = false; s.selected = true; });
+                    selectAll.value = true;
+
+                    if (autoGroupMode.value === 'count') {
+                        // 模式2：每组固定 N 句
+                        for (let i = 0; i < rawSegments.length; i++) {
+                            if ((i + 1) % val !== 0 && i < rawSegments.length - 1) {
+                                rawSegments[i].linkNext = true;
+                            }
+                        }
+                    } else if (autoGroupMode.value === 'total') {
+                        // 模式3：按最终组数 (均分算法)
+                        const totalSentences = rawSegments.length;
+                        const targetGroups = Math.min(val, totalSentences); // 防止组数大于句数
+                        
+                        const baseSize = Math.floor(totalSentences / targetGroups); // 基础大小
+                        const remainder = totalSentences % targetGroups; // 余数，用于分配给前几组
+                        
+                        let currentIndex = 0;
+                        for (let g = 0; g < targetGroups; g++) {
+                            // 前 remainder 组，每组多 1 个
+                            const currentGroupSize = g < remainder ? baseSize + 1 : baseSize;
+                            
+                            // 遍历当前组内的元素，设置 link
+                            for (let i = 0; i < currentGroupSize; i++) {
+                                // 如果不是当前组的最后一个，且不是所有句子的最后一个，则 Link
+                                if (i < currentGroupSize - 1 && currentIndex < totalSentences - 1) {
+                                    rawSegments[currentIndex].linkNext = true;
+                                }
+                                currentIndex++;
+                            }
+                        }
+
+                    } else {
+                        // 模式1：按时间 (贪心算法)
+                        let currentGroupDuration = 0;
+                        for (let i = 0; i < rawSegments.length - 1; i++) {
+                            const seg = rawSegments[i];
+                            const duration = seg.end - seg.start;
+                            currentGroupDuration += duration;
+                            
+                            // 只有当时长明显小于目标值时才连接
+                            if (currentGroupDuration < val) {
+                                seg.linkNext = true;
+                            } else {
+                                // 超过了，断开，重置
+                                seg.linkNext = false;
+                                currentGroupDuration = 0;
+                            }
+                            if (!seg.linkNext) currentGroupDuration = 0;
+                        }
+                    }
+                    showAutoGroupModal.value = false;
+                };
+
+                const encodeMP3 = (channels, sampleRate) => {
+                    const buffer = [];
+                    const mp3enc = new lamejs.Mp3Encoder(channels.length, sampleRate, 128);
+                    const remaining = channels[0].length;
+                    const maxSamples = 1152;
+                    const floatTo16BitPCM = (input) => {
+                        const output = new Int16Array(input.length);
+                        for (let i = 0; i < input.length; i++) {
+                            const s = Math.max(-1, Math.min(1, input[i]));
+                            output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                        }
+                        return output;
+                    };
+                    const left = floatTo16BitPCM(channels[0]);
+                    const right = channels.length > 1 ? floatTo16BitPCM(channels[1]) : undefined;
+                    for (let i = 0; i < remaining; i += maxSamples) {
+                        const leftChunk = left.subarray(i, i + maxSamples);
+                        let mp3buf;
+                        if (channels.length === 2) {
+                            const rightChunk = right.subarray(i, i + maxSamples);
+                            mp3buf = mp3enc.encodeBuffer(leftChunk, rightChunk);
+                        } else {
+                            mp3buf = mp3enc.encodeBuffer(leftChunk);
+                        }
+                        if (mp3buf.length > 0) buffer.push(mp3buf);
+                    }
+                    const mp3buf = mp3enc.flush();
+                    if (mp3buf.length > 0) buffer.push(mp3buf);
+                    return new Blob(buffer, { type: 'audio/mp3' });
+                };
+
+                const generateAndDownload = async () => {
+                    isExporting.value = true;
+                    status.value = '正在打包导出...';
+                    const zip = new JSZip();
+                    const audioFolder = zip.folder("audio");
+                    let txtContent = "";
+                    let htmlDataList = [];
+
+                    let groups = [];
+                    let currentGroup = [];
+                    segments.value.forEach((seg, index) => {
+                        if (seg.selected) {
+                            currentGroup.push(seg);
+                            if (!seg.linkNext || index === segments.value.length - 1) {
+                                groups.push(currentGroup);
+                                currentGroup = [];
+                            }
+                        } else if (currentGroup.length > 0) {
+                            groups.push(currentGroup);
+                            currentGroup = [];
+                        }
+                    });
+
+                    for (let i = 0; i < groups.length; i++) {
+                        const group = groups[i];
+                        const startTime = group[0].start;
+                        const endTime = group[group.length - 1].end;
+                        const combinedText = group.map(g => g.text).join(" ");
+                        const fileName = `${i + 1}-${startTime.toFixed(2)}-${endTime.toFixed(2)}.mp3`;
+                        const sampleRate = audioBuffer.value.sampleRate;
+                        const startSample = Math.floor(startTime * sampleRate);
+                        const endSample = Math.floor(endTime * sampleRate);
+                        const channels = [];
+                        for (let ch = 0; ch < audioBuffer.value.numberOfChannels; ch++) {
+                            channels.push(audioBuffer.value.getChannelData(ch).slice(startSample, endSample));
+                        }
+                        const mp3Blob = encodeMP3(channels, sampleRate);
+                        audioFolder.file(fileName, mp3Blob);
+                        txtContent += `${fileName}\t${combinedText}\n`;
+                        htmlDataList.push({ file: `audio/${fileName}`, text: combinedText });
+                    }
+                    zip.file("transcription.txt", txtContent);
+                    zip.file("player.html", generatePlayerHtml(htmlDataList));
+                    const content = await zip.generateAsync({ type: "blob" });
+                    const link = document.createElement("a");
+                    link.href = URL.createObjectURL(content);
+                    link.download = "smart-audio-cuts.zip";
+                    link.click();
+                    isExporting.value = false;
+                    status.value = '导出成功！';
+                    setTimeout(() => status.value = '', 3000);
+                };
+
+                const generatePlayerHtml = (data) => {
+                    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Audio Player</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:#f3f4f6;padding:20px;max-width:800px;margin:0 auto}h1{text-align:center;color:#374151;margin-bottom:30px}.card{background:#fff;border-radius:12px;box-shadow:0 4px 6px -1px rgba(0,0,0,0.1);overflow:hidden}.row{display:flex;align-items:start;padding:16px;border-bottom:1px solid #e5e7eb;transition:background 0.2s;cursor:pointer}.row:last-child{border-bottom:none}.row:hover{background:#f9fafb}.row.active{background:#eff6ff;border-left:4px solid #3b82f6}.btn{background:#3b82f6;color:#fff;border:none;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-right:16px;flex-shrink:0;cursor:pointer}.text{font-size:16px;line-height:1.6;color:#1f2937;margin-top:3px}</style></head><body><h1>听力教材播放器</h1><audio id="player"></audio><div class="card" id="list"></div><script>const data=${JSON.stringify(data)};const list=document.getElementById('list');const audio=document.getElementById('player');data.forEach((item,i)=>{const row=document.createElement('div');row.className='row';row.innerHTML='<button class="btn">▶</button><div class="text">'+item.text+'</div>';row.onclick=()=>{document.querySelectorAll('.row').forEach(r=>r.classList.remove('active'));row.classList.add('active');audio.src=item.file;audio.play();};list.appendChild(row);});<\/script></body></html>`;
+                };
+
+                return {
+                    audioBuffer, segments, status, isLoading, isExporting, selectAll,
+                    segmentsWithColors, groupCount, inputLabel, inputUnit, inputHint,
+                    handleFileUpload, playSegment, formatTime, toggleLink, toggleSelectAll, generateAndDownload,
+                    showAutoGroupModal, autoGroupMode, autoGroupValue, applyAutoGroup, openAutoGroupModal
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
