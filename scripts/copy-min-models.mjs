@@ -7,7 +7,8 @@ const projectRoot = path.resolve(__dirname, '..');
 const distRoot = path.join(projectRoot, 'dist');
 
 const whisperSrc = path.join(projectRoot, 'public', 'models', 'whisper-tiny');
-const whisperDst = path.join(distRoot, 'models', 'whisper-tiny');
+// 使用 Xenova/whisper-tiny 路径以匹配 @xenova/transformers 的模型查找路径
+const whisperDst = path.join(distRoot, 'models', 'Xenova', 'whisper-tiny');
 const ortSrc = path.join(projectRoot, 'public', 'models', 'onnx-runtime');
 const ortDst = path.join(distRoot, 'models', 'onnx-runtime');
 

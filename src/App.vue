@@ -298,10 +298,9 @@ const handleFileUpload = async (event: Event) => {
           strideLength: STRIDE_LENGTH_S,
           returnTimestamps: true,
           wasmPath: resolvedWasmPath,
-          allowLocalModels: isLocalhost,
-          allowRemoteModels: true,
           localModelPath: resolvedLocalModelPath,
-          useBrowserCache: false
+          useBrowserCache: true,
+          isLocalhost
         }
       },
       [resampled.buffer]

@@ -9,10 +9,9 @@ import {
 
 type WorkerConfig = {
   wasmPath: string;
-  allowLocalModels: boolean;
-  allowRemoteModels: boolean;
   useBrowserCache: boolean;
   localModelPath: string;
+  isLocalhost: boolean;
 };
 
 type TranscribePayload = WorkerConfig & {
@@ -74,21 +73,43 @@ const ensureTranscriber = async (config: WorkerConfig) => {
   const needsRefresh =
     !cachedConfig ||
     cachedConfig.wasmPath !== config.wasmPath ||
-    cachedConfig.allowLocalModels !== config.allowLocalModels ||
-    cachedConfig.allowRemoteModels !== config.allowRemoteModels ||
+    cachedConfig.isLocalhost !== config.isLocalhost ||
     cachedConfig.useBrowserCache !== config.useBrowserCache ||
     cachedConfig.localModelPath !== config.localModelPath;
 
   if (!transcriberPromise || needsRefresh) {
-    env.allowLocalModels = config.allowLocalModels;
-    env.allowRemoteModels = config.allowRemoteModels;
     env.useBrowserCache = config.useBrowserCache;
-    env.localModelPath = config.localModelPath;
     env.backends.onnx.wasm.wasmPaths = config.wasmPath;
     cachedConfig = { ...config };
-    transcriberPromise = pipeline('automatic-speech-recognition', 'whisper-tiny') as Promise<
-      AutomaticSpeechRecognitionPipeline
-    >;
+
+    if (config.isLocalhost) {
+      // localhost: 只用本地模型
+      env.allowLocalModels = true;
+      env.allowRemoteModels = false;
+      env.localModelPath = config.localModelPath;
+      transcriberPromise = pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny') as Promise<
+        AutomaticSpeechRecognitionPipeline
+      >;
+    } else {
+      // 非 localhost: 先尝试 CDN，失败后用 self-host
+      env.allowLocalModels = false;
+      env.allowRemoteModels = true;
+      try {
+        transcriberPromise = pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny') as Promise<
+          AutomaticSpeechRecognitionPipeline
+        >;
+        await transcriberPromise; // 等待确认 CDN 加载成功
+      } catch {
+        // CDN 失败，回退到 self-host
+        console.warn('CDN 加载失败，使用 self-host 模型');
+        env.allowLocalModels = true;
+        env.allowRemoteModels = false;
+        env.localModelPath = config.localModelPath;
+        transcriberPromise = pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny') as Promise<
+          AutomaticSpeechRecognitionPipeline
+        >;
+      }
+    }
   }
   return transcriberPromise;
 };
